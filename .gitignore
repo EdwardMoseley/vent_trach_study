@@ -1,0 +1,6 @@
+*.csv
+*.csv.gz
+*.json
+*.xlsx
+*.pdf
+.DS_Store

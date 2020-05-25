@@ -1,0 +1,460 @@
+---
+title: "Trach Study Clinical Data"
+author: "HST.953"
+date: "6/3/2019"
+output: html_document
+---
+
+#### Important Data
+
+1. Day 1 of ICU
+2. Day 1 of Mechvent
+3. Day 7 of Mechvent
+
+#### Modeling
+
+1. 3mo Mortality & 1yr Mortality ON Day 7 of Mechvent
+
+All data use a 0.25day buffer period to account for any database lag, consistent with other validated MIMIC-III scripts.
+
+### Utility Functions
+
+#### rename
+
+Renames columns, avoiding some.
+
+```{r}
+rename <- function(dat, avoid_names, prefix){
+        for (name in colnames(dat)[!(colnames(dat) %in% avoid_names)]){
+            colnames(dat)[which(colnames(dat) == name)] <- paste(prefix, name, sep = '')
+        }
+    return(dat)
+}
+```
+
+#### outlier_na
+
+If a value is out of range, replace it with `NA`
+
+```{r}
+outlier_na <- function(dat, nm){
+  for(var in nm$variable){
+    ## Create dictionary of columns
+    dictionary <- colnames(dat)[grepl(var, colnames(dat))]
+    for (lab in dictionary){
+      ## If value is out of range, replace with NA
+      dat[[lab]] <- ifelse((dat[[lab]] > nm[nm$variable==var, ]$max) | (dat[[lab]] < nm[nm$variable == var, ]$min), NA, dat[[lab]])
+      #print(as.data.frame(summary(dat[,grepl(lab, colnames(dat))])))
+    }
+  }
+  return(dat)
+}
+```
+
+#### Outlier replace
+
+If a variable is missing, replace it will value from literature.
+
+```{r}
+outlier_replace <- function(dat, normals){
+    ## For each normal variable
+    for (val in normals$variable){
+        ## Find all columns with the variable
+        dictionary <- colnames(dat[ ,colnames(dat)[grepl(val, colnames(dat))]])
+        ## Iterate through...
+        for (nm in dictionary){
+
+                ## Look for NAs in the column and replace them with the normal value
+                dat[[nm]] <- ifelse(is.na(dat[[nm]]) & 
+                                        dat$GENDER == "M", 
+                                    normals[normals$variable == val,]$`M`, 
+                                    dat[[nm]])
+                
+                dat[[nm]] <- ifelse(is.na(dat[[nm]]) & 
+                                        dat$GENDER == "F",
+                                    normals[normals$variable == val, ]$`F`, 
+                                    dat[[nm]])
+        }
+    }
+    ## Correct heights * weights
+    dat[(is.na(dat$HEIGHT_AVG) & dat$GENDER == "M"), ]$HEIGHT_AVG <- normals[normals$variable == "HEIGHT_", ]$M
+    dat[(is.na(dat$HEIGHT_AVG) & dat$GENDER == "F"), ]$HEIGHT_AVG <- normals[normals$variable == "HEIGHT_", ]$`F`
+    ## Return
+    return(dat)
+}
+```
+
+#### median_replace
+
+Look for `NA` values, replace with median value
+
+```{r}
+median_replace <- function(dat){
+  for (var in colnames(dat)){
+      if (is.numeric(dat[[var]])){
+        #print(var)
+        med_val <- median(dat[[var]], na.rm = T)
+        #print(med_val)
+        dat[[var]] <- ifelse(is.na(dat[[var]]), med_val, dat[[var]])
+      }
+        
+  }
+  return(dat)
+}
+```
+
+## Load Data
+
+```{r}
+dat <- read.csv("~/vent_trach_study/data/final_trach_cohort.csv", header = T, stringsAsFactors = F)
+
+## Subset data to remove unnecessary variables
+dat <- dat[, c("SUBJECT_ID",
+               "HADM_ID",
+               "ICUSTAY_ID",
+               "ADMISSION_AGE",
+               "GENDER",
+               "ETHNICITY",
+               "ADMISSION_TYPE",
+               "ADMISSION_LOCATION",
+               "FIRST_CAREUNIT",
+               "MORTALITY_3MO_DISCH",
+               "MORTALITY_1YR_DISCH",
+               "COHORT")]
+
+## Remove all duplicates
+dat <- dat[!duplicated(dat),]
+
+## Check dimensions
+## dim(dat)
+
+## Look
+## head(dat)
+```
+
+### Vitals
+
+__Necessary Queries:__
+
+1. vitals-first-day.sql
+2. vitals-first-vent-day.sql
+3. vitals-seventh-vent-day.sql
+
+**min, max, mean** of:
+
+1. Heartrate
+2. Systolic Blood Pressure
+3. Diastolic Blood Pressure
+4. Respiratory Rate
+5. Temperature
+6. Oxygen Saturation
+7. Blood Glucose
+
+```{r}
+## Vitals Day 1 (ICU Stay)
+vd1 <- read.csv("~/vent_trach_study/data/tables/vitals-first-day.csv", header = T, stringsAsFactors = F)
+colnames(vd1) <- toupper(colnames(vd1))
+vd1 <- rename(vd1, c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), "VD1_")
+
+## Vitals Mechanical Ventilation Day 1
+vmvd1 <- read.csv("~/vent_trach_study/data/tables/vitals-first-vent-day.csv", header = T, stringsAsFactors = F)
+colnames(vmvd1) <- toupper(colnames(vmvd1))
+vmvd1 <- rename(vmvd1, c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), "VMVD1_")
+
+## Vitals Mechanical Ventilation Day 7
+vmvd7 <- read.csv("~/vent_trach_study/data/tables/vitals-seventh-vent-day.csv", header = T, stringsAsFactors = F)
+colnames(vmvd7) <- toupper(colnames(vmvd7))
+vmvd7 <- rename(vmvd7, c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), "VMVD7_")
+
+## Left join vd1, vdmvd1, 7
+tmp <- merge(x = dat, y = vd1, by =c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), all.x = TRUE)
+tmp <- merge(x = tmp, y = vmvd1, by = c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), all.x = TRUE)
+tmp <- merge(x = tmp, y = vmvd7, by = c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), all.x = TRUE)
+
+## Clean
+rm(vd1, vmvd1, vmvd7)
+dat <- tmp
+rm(tmp)
+```
+
+### Labs
+
+__Necessary Queries:__
+
+1. labs-first-day.sql
+2. labs-first-vent-day.sql
+3. labs-seventh-vent-day.sql
+
+**min, max, mean** of:
+
+1. Anion Gap
+2. Albumin
+3. Bands
+4. Bicarbonate
+5. Bilirubin
+6. Creatinine
+7. Chloride
+8. Glucose
+
+```{r}
+ld1 <- read.csv("~/vent_trach_study/data/tables/labs-first-day.csv", header = T, stringsAsFactors = F)
+colnames(ld1) <- toupper(colnames(ld1))
+ld1 <- rename(ld1, c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID", "CHARTTIME"), "LD1_")
+
+lmvd1 <- read.csv("~/vent_trach_study/data/tables/labs-first-vent-day.csv", header = T, stringsAsFactors = F)
+colnames(lmvd1) <- toupper(colnames(lmvd1))
+lmvd1 <- rename(lmvd1, c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID", "CHARTTIME"), "LMVD1_")
+
+lmvd7 <- read.csv("~/vent_trach_study/data/tables/labs-seventh-vent-day.csv", header = T, stringsAsFactors = F)
+colnames(lmvd7) <- toupper(colnames(lmvd7))
+lmvd7 <- rename(lmvd7, c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID", "CHARTTIME"), "LMVD7_")
+
+## Left join vd1, vdmvd1, 7
+tmp <- merge(x = dat, y = ld1, by = c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), all.x = TRUE)
+tmp <- merge(x = tmp, y = lmvd1, by = c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), all.x = TRUE)
+tmp <- merge(x = tmp, y = lmvd7, by = c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), all.x = TRUE)
+
+## Clean
+rm(ld1, lmvd1, lmvd7)
+dat <- tmp
+rm(tmp)
+```
+
+### Height and Weight Data
+
+__Necessary Queries:__
+
+1. heightfirstday.sql
+2. weight-first-day.sql
+3. weight-first-vent-day.sql
+4. weight-seventh-vent-day.sql
+
+```{r}
+## Height is constant
+height <- read.csv("~/vent_trach_study/data/tables/heightfirstday.csv", header = T, stringsAsFactors = F)
+colnames(height) <- toupper(colnames(height))
+
+## Find mean height from all sources
+height$HEIGHT_AVG <- apply(height[,2:4], 1, mean, na.rm = T)
+
+## Weight can be pulled for different days
+wd1 <- read.csv("~/vent_trach_study/data/tables/weightfirstday.csv", header = T, stringsAsFactors = F)
+colnames(wd1) <- toupper(colnames(wd1))
+## Take the average weight
+wd1$WEIGHT_AVG <- apply(wd1[,2:5], 1, mean, na.rm = T)
+wd1 <- aggregate(WEIGHT_AVG ~ ICUSTAY_ID, data = wd1, FUN = mean)
+wd1 <- rename(wd1, "ICUSTAY_ID", "WEIGHTD1_")
+
+wmvd1 <- read.csv("~/vent_trach_study/data/tables/weight-first-vent-day.csv", header = T, stringsAsFactors = F)
+colnames(wmvd1) <- toupper(colnames(wmvd1))
+## Take the average weight
+wmvd1$WEIGHT_AVG <- apply(wmvd1[,2:5], 1, mean, na.rm = T)
+wmvd1 <- aggregate(WEIGHT_AVG ~ ICUSTAY_ID, data = wmvd1, FUN = mean)
+wmvd1 <- rename(wmvd1, "ICUSTAY_ID", "WEIGHTMVD1_")
+
+wmvd7 <- read.csv("~/vent_trach_study/data/tables/weight-seventh-vent-day.csv", header = T, stringsAsFactors = F)
+colnames(wmvd7) <- toupper(colnames(wmvd7))
+## Take the average weight
+wmvd7$WEIGHT_AVG <- apply(wmvd7[,2:5], 1, mean, na.rm = T)
+wmvd7 <- aggregate(WEIGHT_AVG ~ ICUSTAY_ID, data = wmvd7, FUN = mean)
+wmvd7 <- rename(wmvd7, "ICUSTAY_ID", "WEIGHTMVD7_")
+
+## Left join vd1, vdmvd1, 7
+tmp <- merge(x = dat, y = height, by = "ICUSTAY_ID")
+
+## Keep only average
+tmp$HEIGHT <- NULL
+tmp$HEIGHT_CHART <- NULL
+tmp$HEIGHT_ECHO <- NULL
+
+tmp <- merge(x = tmp, y = wd1, by = c("ICUSTAY_ID"), all.x = TRUE)
+tmp <- merge(x = tmp, y = wmvd1, by = c("ICUSTAY_ID"), all.x = TRUE)
+tmp <- merge(x = tmp, y = wmvd7, by = c("ICUSTAY_ID"), all.x = TRUE)
+
+## Clean
+rm(height, wd1, wmvd1, wmvd7)
+dat <- tmp
+rm(tmp)
+```
+
+### Renal Replacement Therapy
+
+__Necessary Queries:__
+
+1. rrt-first-day.sql
+2. rrt-first-vent-day.sql
+3. rrt-seventh-vent-day.sql
+
+```{r}
+rrtd1 <- read.csv("~/vent_trach_study/data/tables/rrt-first-day.csv", header = T, stringsAsFactors = F)
+colnames(rrtd1) <- toupper(colnames(rrtd1))
+rrtd1 <- aggregate(RRT ~ ICUSTAY_ID, data = rrtd1, FUN = max)
+rrtd1 <- rename(rrtd1, c("ICUSTAY_ID"), "RRTD1_")
+
+rrtmvd1 <- read.csv("~/vent_trach_study/data/tables/rrt-first-vent-day.csv", header = T, stringsAsFactors = F)
+colnames(rrtmvd1) <- toupper(colnames(rrtmvd1))
+rrtmvd1 <- aggregate(RRT ~ ICUSTAY_ID, data = rrtmvd1, FUN = max)
+rrtmvd1 <- rename(rrtmvd1, c("ICUSTAY_ID"), "RRTMVD1_")
+
+rrtmvd7 <- read.csv("~/vent_trach_study/data/tables/rrt-seventh-vent-day.csv", header = T, stringsAsFactors = F)
+colnames(rrtmvd7) <- toupper(colnames(rrtmvd7))
+rrtmvd7 <- aggregate(RRT ~ ICUSTAY_ID, data = rrtmvd7, FUN = max)
+rrtmvd7 <- rename(rrtmvd7, c("ICUSTAY_ID"), "RRTMVD7_")
+
+## Left join rrtd1, rrtmvd1, 7
+tmp <- merge(x = dat, y = rrtd1, by = "ICUSTAY_ID", all.x = TRUE)
+tmp <- merge(x = tmp, y = rrtmvd1, by = "ICUSTAY_ID", all.x = TRUE)
+tmp <- merge(x = tmp, y = rrtmvd7, by = "ICUSTAY_ID", all.x = TRUE)
+
+## Clean
+rm(rrtd1, rrtmvd1, rrtmvd7)
+dat <- tmp
+rm(tmp)
+```
+
+## Vasopressors
+
+```{r}
+## Reload entire cohort and join to vasopressor durations for time
+mvc <- read.csv("~/vent_trach_study/data/final_trach_cohort.csv", header = T, stringsAsFactors = F)
+
+vaso <- read.csv("~/vent_trach_study/data/tables/vasopressordurations.csv", header = T, stringsAsFactors = F)
+colnames(vaso) <- toupper(colnames(vaso))
+
+## Temporary merge for calculations
+tmp <- merge(mvc[,c("ICUSTAY_ID", "FIRST_VENT_STARTTIME", "INTIME")], vaso, by = "ICUSTAY_ID", all.x = TRUE)
+
+## Use properties of vasopressor durations to check vasopressor use.
+## Again, add 0.25day buffer
+tmp$VPD1_VP <- ifelse((((as.POSIXlt(as.character(tmp$ENDTIME), tz = "EST")) + (0.25 * (24 * 60 * 60))) >= (as.POSIXlt(as.character(tmp$INTIME), tz = "EST") + (1 * (24 * 60 * 60) ))), 1, 0)
+tmp$VPMVD1_VP <- ifelse((((as.POSIXlt(as.character(tmp$ENDTIME), tz = "EST")) + (0.25 * (24 * 60 * 60))) >= (as.POSIXlt(as.character(tmp$FIRST_VENT_STARTTIME), tz = "EST") + (1 * (24 * 60 * 60) ))), 1, 0)
+tmp$VPMVD7_VP <- ifelse((((as.POSIXlt(as.character(tmp$ENDTIME), tz = "EST")) + (0.25 * (24 * 60 * 60))) >= (as.POSIXlt(as.character(tmp$FIRST_VENT_STARTTIME), tz = "EST") + (7 * (24 * 60 * 60) ))), 1, 0)
+
+## Correct NAs to 0
+tmp$VPD1_VP <- ifelse(is.na(tmp$VPD1_VP), 0, tmp$VPD1_VP)
+tmp$VPMVD1_VP <- ifelse(is.na(tmp$VPMVD1_VP), 0, tmp$VPMVD1_VP)
+tmp$VPMVD7_VP <- ifelse(is.na(tmp$VPMVD7_VP), 0, tmp$VPMVD7_VP)
+
+tmp <- aggregate(cbind(VPD1_VP, VPMVD1_VP, VPMVD7_VP) ~ ICUSTAY_ID, data = tmp, FUN = max)
+
+## Merge back to data
+dat <- merge(x = dat, y = tmp, by = c("ICUSTAY_ID"), all.x = TRUE)
+
+## Clean
+rm(mvc, vaso, tmp)
+```
+
+## Missing Value Normal Range Correction
+
+```{r}
+tmp <- read.csv("~/vent_trach_study/data/normal_reference30Jul19.csv", header = T, stringsAsFactors = F)
+
+## Capture anything coming before a '_' (ALBUMIN, HEMOGLOBIN, etc.)
+## Replace captured group including '_' because of PT vs PTT
+tmp$variable <- gsub("([^_]*).*", "\\1_", tmp$variable)
+
+## Remove resulting duplicates
+tmp <- tmp[!duplicated(tmp),]
+
+## Drop characters from values
+tmp$value_m <- as.numeric(unlist(regmatches(tmp$value_m, gregexpr("[-+]?[0-9]*\\.?[0-9]+([eE][-+]?[0-9]+)?", tmp$value_m))))
+tmp$value_f <- as.numeric(unlist(regmatches(tmp$value_f, gregexpr("[-+]?[0-9]*\\.?[0-9]+([eE][-+]?[0-9]+)?", tmp$value_f))))
+
+## Correct column names
+colnames(tmp) <- c("variable", "M", "F")
+
+## Load normal ranges
+nm_range <- read.csv("~/vent_trach_study/data/normal_range30Jul19.csv", header = T, stringsAsFactors = F)
+
+## NA values that are out of range
+dat <- outlier_na(dat, nm_range)
+
+## Replace NAs if a replacement is available
+dat <- outlier_replace(dat, tmp)
+
+## If no replacement is available, replace with median value
+dat <- median_replace(dat)
+
+## Clean environment
+rm(tmp, nm_range)
+```
+
+## BMI Calculation
+
+```{r}
+dat$BMID1 <- dat$WEIGHTD1_WEIGHT_AVG/dat$HEIGHT_AVG/dat$HEIGHT_AVG*10000
+dat$BMIMVD1 <- dat$WEIGHTMVD1_WEIGHT_AVG/dat$HEIGHT_AVG/dat$HEIGHT_AVG*10000
+dat$BMIMVD7 <- dat$WEIGHTMVD7_WEIGHT_AVG/dat$HEIGHT_AVG/dat$HEIGHT_AVG*10000
+```
+
+## Comorbidities on Hospital Admission
+
+```{r}
+elixhauser <- read.csv("~/vent_trach_study/data/tables/elixhauser.csv", header = T, stringsAsFactors = F)
+colnames(elixhauser) <- toupper(colnames(elixhauser))
+elixhauser <- rename(elixhauser, "HADM_ID", "HOSP_ADMIT_")
+
+## Merge
+dat <- merge(x = dat, y = elixhauser, by = "HADM_ID", all.x = TRUE)
+
+## Clean
+rm(elixhauser)
+```
+
+## Illness Severity Scores (ICU Admission Level, day one)
+
+These are all calculated from first ICU stay
+
+```{r, eval = F}
+aps <- read.csv("~/vent_trach_study/data/tables/apsiii.csv", header = T, stringsAsFactors = F)
+colnames(aps) <- toupper(colnames(aps))
+
+## Subset only necesary data
+aps <- aps[,c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID", "APSIII")]
+aps <- rename(aps, c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), "ICU_D1_")
+## Merge
+dat <- merge(x = dat, y = aps, by = c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), all.x = TRUE)
+rm(aps)
+
+oasis <- read.csv("~/vent_trach_study/data/tables/oasis.csv", header = T, stringsAsFactors = F)
+colnames(oasis) <- toupper(colnames(oasis))
+## Subset
+oasis <- oasis[, c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID", "OASIS")]
+oasis <- rename(oasis, c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), "ICU_D1_")
+## Merge
+dat <- merge(x = dat, y = oasis, by = c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), all.x = TRUE)
+rm(oasis)
+
+sofa <- read.csv("~/vent_trach_study/data/tables/sofa.csv", header = T, stringsAsFactors = F)
+colnames(sofa) <- toupper(colnames(sofa))
+## Subset
+sofa <- sofa[, c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID", "SOFA")]
+sofa <- rename(sofa, c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), "ICU_D1_")
+## Merge
+dat <- merge(x = dat, y = sofa, by = c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), all.x = TRUE)
+rm(sofa)
+
+lods <- read.csv("~/vent_trach_study/data/tables/lods.csv", header = T, stringsAsFactors = F)
+colnames(lods) <- toupper(colnames(lods))
+## Subset
+lods <- lods[, c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID", "LODS")]
+lods <- rename(lods, c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), "ICU_D1_")
+## Merge
+dat <- merge(x = dat, y = lods, by = c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), all.x = TRUE)
+rm(lods)
+
+saps <- read.csv("~/vent_trach_study/data/tables/sapsii.csv", header = T, stringsAsFactors = F)
+colnames(saps) <- toupper(colnames(saps))
+## Subset
+saps <- saps[, c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID", "SAPSII")]
+saps <- rename(saps, c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), "ICU_D1_")
+## Merge
+dat <- merge(x = dat, y = saps, by = c("SUBJECT_ID", "HADM_ID", "ICUSTAY_ID"), all.x = TRUE)
+rm(saps)
+```
+
+## Write
+
+```{r}
+write.csv(dat, "~/vent_trach_study/data/vent_trach_cohort_clean25May2020.csv", row.names = F)
+```
