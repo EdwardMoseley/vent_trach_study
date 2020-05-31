@@ -131,12 +131,9 @@ dat[(grepl("LEFT", dat$DISCHARGE_LOCATION)),]$DISCHARGE_LOCATION <- "HOME/HOME H
 colnames(dat)[which(colnames(dat) == "HOSP_ADMIT_ELIXHAUSER")] <- "ELIXHAUSER"
 
 
-
-
-
 ## Load Test/Train split
-x_train <- read.csv("~/vent_trach_study/data/x_train.csv", header = T, stringsAsFactors = F)
-x_test <- read.csv("~/vent_trach_study/data/x_test.csv", header = T, stringsAsFactors = F)
+x_train <- read.csv("~/vent_trach_study/data/X_train.csv", header = T, stringsAsFactors = F)
+x_test <- read.csv("~/vent_trach_study/data/X_test.csv", header = T, stringsAsFactors = F)
 
 ## d7_train
 d7_train <- dat[(dat$ICUSTAY_ID %in% x_train$ICUSTAY_ID),]
@@ -190,7 +187,4 @@ non_normal <- c("ADMISSION_AGE_NONNORM",
 d7_tab <- CreateTableOne(data = d7, strata = "cohort")
 
 write.csv(print(d7_tab, nonnormal = non_normal, 
-                quote = F, noSpaces = T, showAllLevels = T), file = "~/vent_trach_study/table_one25May2020.csv")
-
-
-## Appendix 2
+                quote = F, noSpaces = T, showAllLevels = T), file = "~/vent_trach_study/table_one30May2020.csv")
